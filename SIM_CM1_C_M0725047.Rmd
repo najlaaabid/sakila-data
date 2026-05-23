@@ -1,0 +1,284 @@
+---
+title: "Case Method 1 - Sistem Informasi Manajemen"
+subtitle: "Analisis dan Visualisasi Sakila Database"
+author: 
+  - "Nama: Najlaa Abid"
+  - "NIM: M0725047"
+  - "Kelas: C"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: cosmo
+    highlight: tango
+    toc: true
+    toc_float: true
+    number_sections: true
+    self_contained: true
+---
+
+<style>
+/* Kustomisasi CSS untuk mempercantik tampilan HTML Report */
+body {
+  font-family: 'Helvetica Neue', Arial, sans-serif;
+  color: #2c3e50;
+  line-height: 1.6;
+}
+h1, h2, h3 {
+  color: #2c3e50;
+  font-weight: 700;
+}
+h1 {
+  border-bottom: 2px solid #3498db;
+  padding-bottom: 10px;
+}
+.insight-box {
+  background-color: #ecf0f1;
+  border-left: 5px solid #3498db;
+  padding: 15px;
+  margin-bottom: 20px;
+  border-radius: 4px;
+}
+.footer-text {
+  text-align: center;
+  color: #7f8c8d;
+  font-size: 0.9em;
+  margin-top: 50px;
+}
+</style>
+
+---
+
+# Pendahuluan & Persamaan Matematis
+
+Perkembangan sistem informasi memungkinkan organisasi untuk melakukan analisis berbasis data dalam memahami pola bisnis secara lebih akurat. Pada studi ini, dataset Sakila digunakan sebagai dasar untuk mengevaluasi performa sistem penyewaan film melalui pendekatan analisis deskriptif dan inferensial.
+
+Penelitian ini berfokus pada tiga aspek utama yang saling berkaitan dalam menggambarkan performa bisnis secara menyeluruh, yaitu:
+
+1. **Analisis Kategori Film terhadap Pendapatan**  
+   Analisis ini bertujuan untuk mengetahui kontribusi masing-masing kategori film terhadap total pendapatan, jumlah transaksi, serta rata-rata nilai pembayaran. Hasil visualisasi digunakan untuk mengidentifikasi kategori yang menjadi pendorong utama pendapatan sistem.
+
+2. **Analisis Tren Pendapatan Bulanan**  
+   Pendapatan dianalisis dalam bentuk deret waktu untuk melihat pola fluktuasi pendapatan dari bulan ke bulan. Analisis ini membantu memahami stabilitas bisnis serta kemungkinan adanya pola musiman (seasonality) dalam transaksi pelanggan.
+
+3. **Analisis Top 10 Film Terpopuler**  
+   Analisis ini mengidentifikasi film dengan frekuensi penyewaan tertinggi serta kontribusinya terhadap pendapatan. Pendekatan ini digunakan untuk melihat peran aset individual dalam mendukung performa operasional sistem.
+
+Dalam menentukan performa finansial dari setiap kategori film, kita menghitung total pendapatan ($R_c$) untuk suatu kategori film $c$. Secara matematis, formula ini dapat dirumuskan sebagai berikut:
+
+$$R_c = \sum_{i=1}^{n_c} P_{c,i}$$
+
+Di mana:
+- $R_c$ adalah total pendapatan untuk kategori film $c$.
+- $n_c$ adalah jumlah total transaksi penyewaan pada kategori film $c$.
+- $P_{c,i}$ adalah nominal pembayaran pada transaksi ke-$i$ untuk kategori film $c$.
+
+Selain itu, untuk menguji apakah terdapat perbedaan rata-rata pendapatan yang signifikan di antara kelompok kategori film, kita dapat menggunakan uji statistik **ANOVA (Analysis of Variance)** dengan hipotesis:
+
+$$H_0: \mu_1 = \mu_2 = \dots = \mu_k$$
+$$H_1: \text{Minimal ada satu kelompok kategori yang memiliki rata-rata pendapatan berbeda.}$$
+
+---
+
+# Mempersiapkan Data (Syntax R)
+
+Berikut adalah proses *loading library* dan penyiapan data operasional Sakila.
+
+```{r setup-data, message=FALSE, warning=FALSE}
+# Mengaktifkan library yang diperlukan
+library(DBI)
+library(tidyverse)
+library(knitr)
+library(ggplot2)
+library(odbc)
+
+# Koneksi MySQL ke R
+con <- DBI::dbConnect(odbc::odbc(),
+                      Driver = "MySQL ODBC 8.0 ANSI Driver",
+                      Server = "127.0.0.1",
+                      Database = "sakila",
+                      UID = "root",
+                      PWD = "admin123",
+                      Port = 3306)
+```
+
+# Mengambil Data Menggunakan Query SQL
+
+Di tahap ini, kita langsung melakukan *JOIN* antar tabel sesuai skema Sakila (`payment` $\rightarrow$ `rental` $\rightarrow$ `inventory` $\rightarrow$ `film_category` $\rightarrow$ `category`) untuk mendapatkan variabel kategori dan nominal pembayaran.
+
+```{r fetch-data, message=FALSE, warning=FALSE}
+# --- QUERY 2: Total Pendapatan berdasarkan Kategori Film ---
+sakila_data <- dbGetQuery(con,"SELECT 
+  c.name AS category,
+  p.amount AS amount
+FROM payment p
+INNER JOIN rental r ON p.rental_id = r.rental_id
+INNER JOIN inventory i ON r.inventory_id = i.inventory_id
+INNER JOIN film_category fc ON i.film_id = fc.film_id
+INNER JOIN category c ON fc.category_id = c.category_id;")
+
+# --- QUERY 2: Tren Pendapatan Bulanan ---
+trend_data <- dbGetQuery(con, "SELECT 
+    DATE_FORMAT(payment_date, '%Y-%m') AS month,
+    SUM(amount) AS total_revenue,
+    COUNT(payment_id) AS total_transactions
+  FROM payment
+  GROUP BY DATE_FORMAT(payment_date, '%Y-%m')
+  ORDER BY month;")
+
+# --- QUERY 3: Top 10 Film Terpopuler ---
+top_movies_data <- dbGetQuery(con, "SELECT 
+    f.title AS movie_title,
+    COUNT(r.rental_id) AS rental_count,
+    SUM(p.amount) AS total_revenue
+  FROM film f
+  JOIN inventory i ON f.film_id = i.film_id
+  JOIN rental r ON i.inventory_id = r.inventory_id
+  JOIN payment p ON r.rental_id = p.rental_id
+  GROUP BY f.title
+  ORDER BY rental_count DESC
+  LIMIT 10;")
+
+```
+
+# Visualisasi Data
+
+## Total Pendapatan berdasarkan Kategori Film
+```{r}
+# Agregasi total pendapatan berdasarkan kategori film
+revenue_per_category <- sakila_data %>%
+  group_by(category) %>%
+  summarise(
+    Total_Revenue = sum(amount),
+    Total_Rentals = n(),
+    Avg_Payment = mean(amount)
+  ) %>%
+  arrange(desc(Total_Revenue))
+
+# Membuat Visualisasi Total Pendapatan berdasarkan Kategori Film
+ggplot(revenue_per_category, aes(x = reorder(category, Total_Revenue), y = Total_Revenue, fill = Total_Revenue)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  coord_flip() + # Membalik grafik agar nama kategori mudah dibaca
+  scale_fill_gradient(low = "#85c1e9", high = "#1b4f72") +
+  theme_minimal() +
+  labs(
+    title = "Total Pendapatan Sakila Berdasarkan Kategori Film",
+    subtitle = "Analisis untuk Optimalisasi Manajemen Inventaris Store",
+    x = "Kategori Film",
+    y = "Total Pendapatan ($)"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text = element_text(size = 10)
+  )
+```
+
+<div class="insight-box">
+  <p>Hasil visualisasi menunjukkan bahwa pendapatan total per kategori tidak terdistribusi secara merata. Hal ini mengindikasikan adanya ketergantungan sistem terhadap beberapa kategori film tertentu sebagai kontributor utama pendapatan.</p>
+</div>
+
+## Tren Pendapatan Bulanan
+
+Untuk menghitung total pendapatan pada bulan tertentu ($m$), digunakan rumus berikut:
+
+$$R_m = \sum_{j=1}^{k_m} P_{m,j}$$
+
+Di mana:
+
+- $R_m$ adalah total pendapatan pada bulan $m$.
+
+- $k_m$ adalah jumlah seluruh transaksi yang terjadi pada bulan $m$.
+
+- $P_{m,j}$ adalah nilai pembayaran pada transaksi ke-$j$ pada bulan $m$.
+
+```{r, warning=FALSE, fig.align='center', fig.width=8, fig.height=4}
+# Membuat Line Chart + Point Chart untuk tren bulanan
+ggplot(trend_data, aes(x = month, y = total_revenue, group = 1)) +
+  geom_line(color = "#2e4053", size = 1.2) +
+  geom_point(color = "#e74c3c", size = 3) +
+  theme_minimal() +
+  labs(
+    title = "Tren Pendapatan Bulanan Toko Rental Sakila",
+    subtitle = "Analisis Time-Series Performa Finansial",
+    x = "Bulan (Tahun-Bulan)",
+    y = "Total Pendapatan (USD)"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 13))
+```
+
+<div class="insight-box">
+  <p>Tren pendapatan bulanan merepresentasikan agregasi total transaksi dalam periode waktu tertentu. Fluktuasi yang terjadi menunjukkan bahwa performa bisnis lebih dipengaruhi oleh volume transaksi dibandingkan perubahan nilai transaksi individual.</p>
+</div>
+
+## Top 10 Movies
+
+```{r, message=FALSE}
+# Membuat Horizontal Bar Chart untuk Top 10 Movies
+ggplot(top_movies_data, aes(x = reorder(movie_title, rental_count), y = rental_count, fill = total_revenue)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_gradient(low = "#000080", high = "#87cdee") +
+  theme_minimal() +
+  labs(
+    title = "Top 10 Film Paling Populer berdasarkan Frekuensi Rental",
+    subtitle = "Analisis Aset Film Penggerak Utama Operasional Store",
+    x = "Judul Film",
+    y = "Frekuensi Disewa (Kali)",
+    fill = "Total Pendapatan (USD)"
+  ) +
+  theme(plot.title = element_text(face = "bold", size = 13))
+```
+
+<div class="insight-box">
+  <p>Analisis Top 10 film menunjukkan bahwa kontribusi operasional tidak hanya ditentukan oleh frekuensi penyewaan, tetapi juga oleh nilai ekonomi yang dihasilkan dari setiap transaksi. Hal ini mengindikasikan adanya perbedaan antara popularitas dan profitabilitas film.</p>
+</div>
+
+# Analisis Statistik
+
+Untuk melengkapi visualisasi di atas, kita menyajikan tabel ringkasan numerik dan melakukan uji statistik ANOVA guna melihat apakah variasi rata-rata nilai transaksi antar-kategori film tersebut signifikan secara statistik atau hanya variasi acak belaka.
+
+## Ringkasan Data Finansial Kategori
+```{r}
+# Menampilkan tabel agregasi pendapatan
+kable(revenue_per_category, 
+      col.names = c("Kategori Film", "Total Pendapatan (USD)", "Total Transaksi", "Rata-rata Transaksi (USD)"),
+      caption = "Tabel Ringkasan Performa Finansial Kategori Film Sakila")
+```
+
+<div class="insight-box">
+  <p>
+**1. Kategori Unggulan (Top Performing):**
+
+Grafik menunjukkan bahwa kategori film tertentu (seperti Comedy dan Action berdasarkan visualisasi sampel acak ini) mendominasi perolehan total pendapatan. Hal ini mengindikasikan tingginya minat loyalitas pelanggan lokal terhadap genre tersebut.
+
+**2. Kategori Kurang Diminati (Low Performing):**
+
+Kategori seperti Travel cenderung menghasilkan pendapatan yang paling rendah, yang disebabkan oleh kecilnya total volume transaksi (Total Rentals), bukan karena nilai sewa per film yang murah.<p>
+</div>
+
+## Uji Signifikansi (ANOVA)
+```{r}
+# Melakukan uji ANOVA untuk menguji perbedaan rata-rata nilai transaksi
+anova_result <- aov(amount ~ category, data = sakila_data)
+summary(anova_result)
+```
+
+<div class="insight-box">
+  <p>
+**Hasil Uji Statistik ANOVA:**
+
+Berdasarkan output uji ANOVA, nilai $p\text{-value}$ ($Pr(>F)$) yang diperoleh dapat dibandingkan dengan tingkat signifikansi $\alpha = 0.05$. Jika $p\text{-value} > 0.05$, kita gagal menolak $H_0$, yang berarti rata-rata harga bayar per transaksi antar-kategori relatif seragam. Perbedaan total pendapatan murni disebabkan oleh volume intensitas penyewaan, bukan perbedaan tarif sewa.<p>
+</div>
+
+# Kesimpulan
+
+Analisis pada dataset Sakila menunjukkan bahwa pendapatan sangat dipengaruhi oleh distribusi kategori film, intensitas transaksi, serta popularitas film tertentu. Kategori film dengan kontribusi pendapatan tinggi umumnya didorong oleh tingginya jumlah penyewaan, bukan perbedaan nilai transaksi.
+
+Tren pendapatan bulanan memperlihatkan adanya fluktuasi yang mengindikasikan perubahan aktivitas pelanggan dari waktu ke waktu. Sementara itu, analisis Top 10 film menunjukkan bahwa film populer tidak selalu memiliki kontribusi pendapatan yang sebanding, karena terdapat perbedaan antara frekuensi penyewaan dan nilai pendapatan.
+
+Hasil uji ANOVA mengindikasikan bahwa rata-rata nilai transaksi antar kategori relatif tidak berbeda secara signifikan, sehingga variasi pendapatan lebih banyak dipengaruhi oleh volume transaksi.
+
+Secara keseluruhan, optimalisasi pendapatan dapat difokuskan pada pengelolaan kategori dengan permintaan tinggi serta peningkatan efisiensi distribusi inventaris film.
+
+```{r}
+dbDisconnect(con)
+```
